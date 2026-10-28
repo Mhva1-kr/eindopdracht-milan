@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
+import statsmodels.formula.api as smf
 
 st.set_page_config(
     page_title="CO2-uitstoot vs Welvaart Dashboard",
@@ -10,9 +11,9 @@ st.set_page_config(
     layout="wide"
 )
 
-# Eenduidig kleurenpalet & thema voor alle visualisaties
+# Eenduidig kleurenpalet
 PRIMARY_COLOR = "#1f77b4"
-ACCENT_COLOR = "#ff7f0e"
+ACCENT_COLOR = "#d62728"
 THEME_TEMPLATE = "plotly_white"
 
 @st.cache_data
@@ -25,62 +26,99 @@ except FileNotFoundError:
     st.error("Lokaal bestand 'co2_gdp_data.csv' niet gevonden! Voer eerst het script 'etl.py' uit.")
     st.stop()
 
-st.title("🌍 CO₂-Uitstoot & Economische Welvaart")
-st.markdown("""
-Dit interactieve dashboard toetst de **Environmental Kuznets Curve (EKC)** hypothese. 
-Gebruik de verfijnde besturing in de sidebar om de analyse te focussen en navigeer door de tabbladen voor de visualisaties.
+# --- HOOFDBOODSCHAP / HOOFDCONCLUSIE BOVENAAN ---
+st.title("🌍 CO₂-Uitstoot & Economische Welvaart (EKC Analyse)")
+st.info("""
+**Hoofdboodschap:** Dit dashboard toetst of economische groei automatisch leidt tot vergroening (de Environmental Kuznets Curve). 
+**Belangrijkste inzicht:** Hoewel rijke landen per inwoner meer uitstoten dan arme landen, vlakt de stijging af. 
+Toch blijkt uit de statistische toetsing dat economische groei alleen **niet voldoende** is om CO₂-emissies tijdig te laten dalen.
 """)
 
-# --- STRAKKE EN INTUTIEVE SIDEBAR BEDIENING ---
+# --- SIDEBAR BEDIENING ---
 st.sidebar.header("🎛️ Dashboard Besturing")
 min_year = int(df['year'].min())
 max_year = int(df['year'].max())
 selected_year = st.sidebar.slider("📅 Selecteer Jaartal", min_value=min_year, max_value=max_year, value=max_year)
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("⚙️ Data Opschoning & Filters")
-filter_outliers = st.sidebar.checkbox("Verwijder uitschieters (1.5 × IQR regel)", value=True)
-
-# Selectie van specifieke regio/landen of focus in sidebar
-analysis_focus = st.sidebar.selectbox(
-    "🔍 Focus Analyse",
-    ["Wereldwijd (Alle landen)", "Alleen G20 / Grote Economieën", "Focus op Europa"]
+st.sidebar.subheader("⚙️ Regressie Opties")
+filter_outliers_regression = st.sidebar.checkbox(
+    "Verwijder uitschieters (1.5 × IQR) ALLEEN voor het regressiemodel", 
+    value=False,
+    help="De wereldkaart blijft de volledige dataset tonen om de data-integriteit te bewaken."
 )
 
-# Data filteren op basis van jaartal
-df_year = df[df['year'] == selected_year].dropna(subset=['gdp_per_capita', 'co2_per_capita'])
+st.sidebar.markdown("---")
+st.sidebar.subheader("🛠️ Categorie Drempels (Instelbaar)")
+low_thresh = st.sidebar.slider("Drempel Ontwikkeling vs Opkomend ($)", 2000, 15000, 10000, 1000)
+high_thresh = st.sidebar.slider("Drempel Opkomend vs Rijk ($)", 20000, 60000, 40000, 2000)
 
-# Focus toepassen
-if "G20" in analysis_focus:
-    g20_isos = ['USA', 'CHN', 'JPN', 'DEU', 'GBR', 'IND', 'FRA', 'ITA', 'BRA', 'CAN', 'RUS', 'AUS', 'KOR', 'MEX', 'IDN', 'TUR', 'SAU', 'ARG', 'ZAF']
-    df_year = df_year[df_year['iso3'].isin(g20_isos)]
-elif "Europa" in analysis_focus:
-    eu_isos = ['NLD', 'DEU', 'FRA', 'BEL', 'ITA', 'ESP', 'GBR', 'SWE', 'NOR', 'DNK', 'AUT', 'CHE', 'POL', 'FIN', 'PRT', 'IRL', 'GRC', 'CZE', 'ROU', 'HUN']
-    df_year = df_year[df_year['iso3'].isin(eu_isos)]
+# Filter dataset op gekozen jaartal (Volledige dataset voor kaart/kpi)
+df_year_full = df[df['year'] == selected_year].dropna(subset=['gdp_per_capita', 'co2_per_capita']).copy()
 
-# IQR uitbijter filter
-if filter_outliers and len(df_year) > 5:
-    q1_co2 = df_year['co2_per_capita'].quantile(0.25)
-    q3_co2 = df_year['co2_per_capita'].quantile(0.75)
+# Dynamische her-categorisering op basis van sidebar sliders
+def dynamic_categorize(gdp):
+    if gdp > high_thresh:
+        return f"Rijk (> ${high_thresh/1000:.0f}k)"
+    elif gdp >= low_thresh:
+        return f"Opkomend (${low_thresh/1000:.0f}k - ${high_thresh/1000:.0f}k)"
+    else:
+        return f"Ontwikkeling (< ${low_thresh/1000:.0f}k)"
+
+df_year_full['dynamic_income_group'] = df_year_full['gdp_per_capita'].apply(dynamic_categorize)
+
+# Gefilterde dataset voor statistische regressie (indien IQR aangevinkt)
+df_year_reg = df_year_full.copy()
+if filter_outliers_regression and len(df_year_reg) > 10:
+    q1_co2 = df_year_reg['co2_per_capita'].quantile(0.25)
+    q3_co2 = df_year_reg['co2_per_capita'].quantile(0.75)
     iqr_co2 = q3_co2 - q1_co2
     
-    q1_gdp = df_year['gdp_per_capita'].quantile(0.25)
-    q3_gdp = df_year['gdp_per_capita'].quantile(0.75)
+    q1_gdp = df_year_reg['gdp_per_capita'].quantile(0.25)
+    q3_gdp = df_year_reg['gdp_per_capita'].quantile(0.75)
     iqr_gdp = q3_gdp - q1_gdp
 
-    df_year = df_year[
-        (df_year['co2_per_capita'] >= q1_co2 - 1.5 * iqr_co2) & 
-        (df_year['co2_per_capita'] <= q3_co2 + 1.5 * iqr_co2) &
-        (df_year['gdp_per_capita'] >= q1_gdp - 1.5 * iqr_gdp) & 
-        (df_year['gdp_per_capita'] <= q3_gdp + 1.5 * iqr_gdp)
+    df_year_reg = df_year_reg[
+        (df_year_reg['co2_per_capita'] >= q1_co2 - 1.5 * iqr_co2) & 
+        (df_year_reg['co2_per_capita'] <= q3_co2 + 1.5 * iqr_co2) &
+        (df_year_reg['gdp_per_capita'] >= q1_gdp - 1.5 * iqr_gdp) & 
+        (df_year_reg['gdp_per_capita'] <= q3_gdp + 1.5 * iqr_gdp)
     ]
+
+# OLS Regressie berekenen via Statsmodels (Gebruikt de afgeleide kolom gdp_per_capita_sq)
+model_quad = None
+model_lin = None
+r2_quad, r2_lin, p_val_sq, tipping_point, n_obs = None, None, None, None, len(df_year_reg)
+
+if n_obs > 10:
+    # Model 1: Kwadratisch (EKC) - Expliciet met gdp_per_capita_sq uit ETL!
+    model_quad = smf.ols('co2_per_capita ~ gdp_per_capita + gdp_per_capita_sq', data=df_year_reg).fit()
+    r2_quad = model_quad.rsquared
+    p_val_sq = model_quad.pvalues.get('gdp_per_capita_sq', 1.0)
+    
+    b1 = model_quad.params.get('gdp_per_capita', 0)
+    b2 = model_quad.params.get('gdp_per_capita_sq', 0)
+    if b2 < 0:
+        tipping_point = -b1 / (2 * b2)
+
+    # Model 2: Lineair (om te vergelijken wat een rechte lijn zou missen)
+    model_lin = smf.ols('co2_per_capita ~ gdp_per_capita', data=df_year_reg).fit()
+    r2_lin = model_lin.rsquared
+
+# Markeer landen ten opzichte van kantelpunt op de wereldkaart
+if tipping_point and tipping_point > 0:
+    df_year_full['ekc_status'] = df_year_full['gdp_per_capita'].apply(
+        lambda x: "Boven Kantelpunt" if x >= tipping_point else "Onder Kantelpunt"
+    )
+else:
+    df_year_full['ekc_status'] = "Onder Kantelpunt"
 
 # --- TABBLADEN STRUCTUUR ---
 tab1, tab2, tab3, tab4 = st.tabs([
     "🗺️ Wereldkaart & Globale KPI's", 
-    "📈 Statistische Kuznets-Curve & Model", 
-    "📦 Uitgebreide Distributie & Boxplotten", 
-    "🔘 Categorie Analyse & Toplijsten"
+    "📈 Regressie & Hypothesetoetsing", 
+    "📦 Verdeling & Welvaartsgroepen", 
+    "🔘 Dynamic Categorie Analyse"
 ])
 
 # --- TAB 1: KAART & KPI'S ---
@@ -88,17 +126,20 @@ with tab1:
     st.header(f"Geospatiale Wereldspreiding in {selected_year}")
     
     kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-    kpi1.metric("Actieve Landen", len(df_year))
-    kpi2.metric("Gemiddeld BBP per hoofd", f"${df_year['gdp_per_capita'].mean():,.0f}" if len(df_year) > 0 else "$0")
-    kpi3.metric("Gemiddelde CO₂ per hoofd", f"{df_year['co2_per_capita'].mean():.2f} ton" if len(df_year) > 0 else "0 ton")
-    kpi4.metric("Totale Uitstoot", f"{df_year['co2_per_capita'].sum():,.0f} ton" if len(df_year) > 0 else "0 ton")
+    kpi1.metric("Aantal Landen (Volledig)", len(df_year_full))
+    kpi2.metric("Gemiddeld BBP per hoofd", f"${df_year_full['gdp_per_capita'].mean():,.0f}")
+    kpi3.metric("Gemiddelde CO₂ per hoofd", f"{df_year_full['co2_per_capita'].mean():.2f} ton")
+    kpi4.metric("Mediaan CO₂ per hoofd", f"{df_year_full['co2_per_capita'].median():.2f} ton")
 
     st.markdown("---")
     
-    col_map, col_rank = st.columns([2, 1])
-    with col_map:
+    col_map_opt, _ = st.columns([1, 2])
+    with col_map_opt:
+        map_color_mode = st.radio("Kleurkaart op basis van:", ["Absolute CO₂-uitstoot", "Positie t.o.v. EKC-Kantelpunt"], horizontal=True)
+
+    if map_color_mode == "Absolute CO₂-uitstoot":
         fig_map = px.choropleth(
-            df_year,
+            df_year_full,
             locations="iso3",
             color="co2_per_capita",
             hover_name="country",
@@ -107,164 +148,123 @@ with tab1:
             labels={"co2_per_capita": "CO₂ per hoofd (ton)"},
             title=f"CO₂-uitstoot per inwoner ({selected_year})"
         )
-        fig_map.update_layout(margin={"r":0,"t":40,"l":0,"b":0}, height=480)
-        st.plotly_chart(fig_map, use_container_width=True)
+    else:
+        fig_map = px.choropleth(
+            df_year_full,
+            locations="iso3",
+            color="ekc_status",
+            hover_name="country",
+            color_discrete_map={"Onder Kantelpunt": PRIMARY_COLOR, "Boven Kantelpunt": ACCENT_COLOR},
+            template=THEME_TEMPLATE,
+            title=f"Landen gekleurd naar EKC-kantelpunt status ({selected_year})"
+        )
 
-    with col_rank:
-        st.subheader("🌱 Schoonste Top 5")
-        if len(df_year) >= 5:
-            cleanest = df_year.sort_values(by="co2_per_capita", ascending=True).head(5)
-            for _, row in cleanest.iterrows():
-                st.markdown(f"• **{row['country']}**: `{row['co2_per_capita']:.2f} t`")
-        else:
-            st.info("Onvoldoende data.")
+    fig_map.update_layout(margin={"r":0,"t":40,"l":0,"b":0}, height=500)
+    st.plotly_chart(fig_map, use_container_width=True)
 
-        st.subheader("🏭 Hoogste Uitstoters Top 5")
-        if len(df_year) >= 5:
-            highest = df_year.sort_values(by="co2_per_capita", ascending=False).head(5)
-            for _, row in highest.iterrows():
-                st.markdown(f"• **{row['country']}**: `{row['co2_per_capita']:.2f} t`")
-        else:
-            st.info("Onvoldoende data.")
-
-# --- TAB 2: STATISTISCHE ONDERBOUWING & MODEL (Schoon en zonder overbodige tekst) ---
+# --- TAB 2: STATISTISCHE HYPOTHESETOETSING ---
 with tab2:
-    st.header("Statistische Onderbouwing: Kwadratische Regressie & Modelanalyse")
-    st.markdown("""
-    Hier toetsen we de **Environmental Kuznets Curve (EKC)** via een kwadratisch model ($CO_2 = \\beta_0 + \\beta_1 \\cdot BBP + \\beta_2 \\cdot BBP^2$). 
-    De grafiek visualiseert de berekende trendlijn en spreiding voor het geselecteerde jaartal.
+    st.header("Statistische Hypothesetoetsing: Kwadratische OLS Regressie")
+    st.markdown(r"""
+    We toetsen de hypothese: $CO_2 = \beta_0 + \beta_1 \cdot BBP + \beta_2 \cdot BBP^2 + \epsilon$.
+    De afgeleide kolom `gdp_per_capita_sq` uit de ETL wordt hier expliciet meegegeven aan de **Statsmodels OLS-engine**.
     """)
 
-    x = df_year['gdp_per_capita'].values
-    y = df_year['co2_per_capita'].values
-    valid = ~np.isnan(x) & ~np.isnan(y)
-    x_clean, y_clean = x[valid], y[valid]
-
-    if len(x_clean) > 5:
-        coeffs = np.polyfit(x_clean, y_clean, 2)
-        a, b, c = coeffs
+    if model_quad is not None:
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Aantal Observaties (n)", f"{n_obs}")
+        m2.metric(r"Kwadratisch Model $R^2$", f"{r2_quad:.3f}")
+        m3.metric(r"Lineair Model $R^2$", f"{r2_lin:.3f}", delta=f"{r2_quad - r2_lin:+.3f} winst")
         
-        p = np.poly1d(coeffs)
-        y_pred = p(x_clean)
-        ss_res = np.sum((y_clean - y_pred) ** 2)
-        ss_tot = np.sum((y_clean - np.mean(y_clean)) ** 2)
-        r_squared = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
-        tipping_point = -b / (2 * a) if a < 0 else None
-
-        # KPI Metrics
-        mcol1, mcol2, mcol3 = st.columns(3)
-        mcol1.metric("Model Goede Fit ($R^2$)", f"{r_squared:.3f}")
-        mcol2.metric("Kwadratische Coëfficiënt ($\beta_2$)", f"{a:.2e}")
-        if tipping_point and tipping_point > 0:
-            mcol3.metric("Theoretisch Kantelpunt BBP", f"${tipping_point:,.0f}")
-        else:
-            mcol3.metric("Theoretisch Kantelpunt", "Niet bereikt")
+        p_status = "Significant (p < 0.05)" if p_val_sq < 0.05 else "Niet Significant (p ≥ 0.05)"
+        m4.metric(r"p-waarde $\beta_2$", f"{p_val_sq:.4f}", delta=p_status, delta_color="normal")
 
         st.markdown("---")
 
-        # Scatterplot met fit
-        fig_scatter = px.scatter(
-            df_year,
-            x="gdp_per_capita",
-            y="co2_per_capita",
-            hover_name="country",
-            template=THEME_TEMPLATE,
-            labels={"gdp_per_capita": "BBP per hoofd (USD)", "co2_per_capita": "CO₂ per hoofd (ton)"},
-            title=f"Economische Welvaart versus CO₂-uitstoot ({selected_year})"
-        )
-        fig_scatter.update_traces(marker=dict(color=PRIMARY_COLOR, size=8, opacity=0.8))
+        col_scatter, col_stats = st.columns([2, 1])
 
-        x_range = np.linspace(x_clean.min(), x_clean.max(), 200)
-        fig_scatter.add_trace(go.Scatter(
-            x=x_range, y=p(x_range), mode='lines', name='Kwadratische Fit (EKC)',
-            line=dict(color=ACCENT_COLOR, width=3)
-        ))
-        fig_scatter.update_layout(height=500)
-        st.plotly_chart(fig_scatter, use_container_width=True)
+        with col_scatter:
+            fig_scatter = px.scatter(
+                df_year_reg,
+                x="gdp_per_capita",
+                y="co2_per_capita",
+                hover_name="country",
+                template=THEME_TEMPLATE,
+                labels={"gdp_per_capita": "BBP per hoofd (USD)", "co2_per_capita": "CO₂ per hoofd (ton)"},
+                title=f"EKC Kwadratische Regressielijn vs. Lineaire Fit ({selected_year})"
+            )
+
+            # Fit curves berekenen
+            x_vals = np.linspace(df_year_reg['gdp_per_capita'].min(), df_year_reg['gdp_per_capita'].max(), 200)
+            df_pred = pd.DataFrame({'gdp_per_capita': x_vals, 'gdp_per_capita_sq': x_vals**2})
+            
+            y_quad = model_quad.predict(df_pred)
+            y_lin = model_lin.predict(df_pred)
+
+            fig_scatter.add_trace(go.Scatter(x=x_vals, y=y_quad, mode='lines', name='Kwadratisch Model (EKC)', line=dict(color=ACCENT_COLOR, width=3)))
+            fig_scatter.add_trace(go.Scatter(x=x_vals, y=y_lin, mode='lines', name='Rechte Lijn (Lineair)', line=dict(color='gray', dash='dash')))
+
+            fig_scatter.update_layout(height=480)
+            st.plotly_chart(fig_scatter, use_container_width=True)
+
+        with col_stats:
+            st.subheader("📋 Regressieresultaten")
+            conf_int = model_quad.conf_int().loc['gdp_per_capita_sq']
+            
+            st.markdown(f"""
+            * **Kwadratische Term ($\beta_2$):** `{model_quad.params['gdp_per_capita_sq']:.2e}`
+            * **95% Betrouwbaarheidsinterval:** 
+              `[{conf_int[0]:.2e}, {conf_int[1]:.2e}]`
+            * **Berekend Kantelpunt:** {f'${tipping_point:,.0f}' if tipping_point else 'Geen omgekeerde U'}
+            """)
+
+            st.markdown("---")
+            st.markdown("**Wat mist een rechte lijn?**")
+            st.write(f"Een lineair model heeft een $R^2$ van **{r2_lin:.3f}**. Het kwadratische model verhoogt de verklarende kracht naar **{r2_quad:.3f}**. Een rechte lijn veronderstelt dat CO₂ oneindig blijft stijgen bij meer welvaart, wat de werkelijkheid vertekent.")
     else:
-        st.warning("Onvoldoende datapunten voor dit jaartal en de actieve filters.")
+        st.warning("Onvoldoende datapunten voor betrouwbare regressie.")
 
-# --- TAB 3: DISTRIBUTIE & BOXPLOTTEN ---
+# --- TAB 3: VERDELING & BOXPLOTTEN ---
 with tab3:
-    st.header("📦 Uitgebreide Distributie & Uitbijter Analyse")
-    st.markdown("""
-    Dit tabblad combineert **boxplots** (voor het visualiseren van de medianen, spreiding en uitschieters via de IQR-methode) 
-    met **statistische samenvattingen** per variabele.
-    """)
+    st.header("📦 Datadistributie & Spreiding")
+    st.markdown("Inzage in de verdeling van de variabelen per economische welvaartsklasse.")
 
-    bcol1, bcol2 = st.columns(2)
-    
-    with bcol1:
-        st.subheader("CO₂-uitstoot per hoofd")
-        fig_box_co2 = px.box(
-            df_year, 
-            y="co2_per_capita", 
-            template=THEME_TEMPLATE,
-            title=f"Boxplot CO₂ ({selected_year})",
-            labels={"co2_per_capita": "CO₂ per hoofd (ton)"},
-            color_discrete_sequence=[PRIMARY_COLOR]
-        )
-        fig_box_co2.update_layout(height=350)
-        st.plotly_chart(fig_box_co2, use_container_width=True)
+    fig_box_cat = px.box(
+        df_year_full,
+        x="dynamic_income_group",
+        y="co2_per_capita",
+        color="dynamic_income_group",
+        template=THEME_TEMPLATE,
+        title=f"CO₂-uitstoot per inwoner verdeeld over Inkomensklassen ({selected_year})",
+        labels={"dynamic_income_group": "Inkomensklasse", "co2_per_capita": "CO₂ per hoofd (ton)"}
+    )
+    fig_box_cat.update_layout(height=450, showlegend=False)
+    st.plotly_chart(fig_box_cat, use_container_width=True)
 
-        co2_stats = df_year['co2_per_capita'].describe()
-        st.markdown(f"""
-        * **Gemiddelde:** `{co2_stats['mean']:.2f} ton`
-        * **Mediaan (Q2):** `{co2_stats['50%']:.2f} ton`
-        * **Interkwartielafstand (IQR):** `{co2_stats['75%'] - co2_stats['25%']:.2f} ton`
-        """)
-
-    with bcol2:
-        st.subheader("BBP per hoofd")
-        fig_box_gdp = px.box(
-            df_year, 
-            y="gdp_per_capita", 
-            template=THEME_TEMPLATE,
-            title=f"Boxplot BBP ({selected_year})",
-            labels={"gdp_per_capita": "BBP per hoofd (USD)"},
-            color_discrete_sequence=[PRIMARY_COLOR]
-        )
-        fig_box_gdp.update_layout(height=350)
-        st.plotly_chart(fig_box_gdp, use_container_width=True)
-
-        gdp_stats = df_year['gdp_per_capita'].describe()
-        st.markdown(f"""
-        * **Gemiddelde:** `${gdp_stats['mean']:,.0f}`
-        * **Mediaan (Q2):** `${gdp_stats['50%']:,.0f}`
-        * **Interkwartielafstand (IQR):** `${gdp_stats['75%'] - gdp_stats['25%']:,.0f}`
-        """)
-
-# --- TAB 4: CATEGORIE & TOP-LANDEN ---
+# --- TAB 4: CATEGORIE ANALYSE ---
 with tab4:
-    st.header("Gerichte Categorie-Analyse")
-    st.markdown("Schakel eenvoudig tussen economische klassen met de knoppen hieronder om de top-uitstoters per categorie te inspecteren.")
+    st.header("🔘 Dynamische Categorie Analyse")
+    st.markdown("Analyseer de hoogste uitstoters binnen de instelbare economische drempels uit de sidebar.")
 
-    categorie = st.radio(
-        "Kies een economische categorie:",
-        ["Rijke Economieën (BBP > $40k)", "Opkomende Markten ($10k - $40k)", "Ontwikkelingslanden (BBP < $10k)"],
+    selected_cat = st.radio(
+        "Selecteer een categorie om te inspecteren:",
+        df_year_full['dynamic_income_group'].unique(),
         horizontal=True
     )
 
-    if "Rijke" in categorie:
-        df_filtered = df_year[df_year['gdp_per_capita'] > 40000]
-    elif "Opkomende" in categorie:
-        df_filtered = df_year[(df_year['gdp_per_capita'] >= 10000) & (df_year['gdp_per_capita'] <= 40000)]
-    else:
-        df_filtered = df_year[df_year['gdp_per_capita'] < 10000]
+    df_cat_filtered = df_year_full[df_year_full['dynamic_income_group'] == selected_cat]
 
-    st.info(f"Aantal landen binnen deze categorie in **{selected_year}**: **{len(df_filtered)}** landen")
+    st.info(f"Aantal landen in **{selected_cat}**: **{len(df_cat_filtered)}** landen")
 
-    if len(df_filtered) > 0:
+    if len(df_cat_filtered) > 0:
         fig_bar = px.bar(
-            df_filtered.sort_values(by="co2_per_capita", ascending=False).head(10),
+            df_cat_filtered.sort_values(by="co2_per_capita", ascending=False).head(10),
             x="country",
             y="co2_per_capita",
             template=THEME_TEMPLATE,
             labels={"country": "Land", "co2_per_capita": "CO₂ per hoofd (ton)"},
-            title=f"Top 10 hoogste uitstoters binnen deze categorie ({selected_year})"
+            title=f"Top 10 Hoogste Uitstoters binnen {selected_cat} ({selected_year})"
         )
         fig_bar.update_traces(marker_color=PRIMARY_COLOR)
         fig_bar.update_layout(height=450)
         st.plotly_chart(fig_bar, use_container_width=True)
-    else:
-        st.warning("Geen landen gevonden binnen deze selectie.")
