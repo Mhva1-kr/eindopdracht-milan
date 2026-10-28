@@ -30,8 +30,7 @@ except FileNotFoundError:
 st.title("🌍 CO₂-Uitstoot & Economische Welvaart (EKC Analyse)")
 st.info("""
 **Hoofdboodschap:** Dit dashboard toetst of economische groei automatisch leidt tot vergroening (de Environmental Kuznets Curve). 
-**Belangrijkste inzicht:** Hoewel rijke landen per inwoner meer uitstoten dan arme landen, vlakt de stijging af. 
-Toch blijkt uit de statistische toetsing dat economische groei alleen **niet voldoende** is om CO₂-emissies tijdig te laten dalen.
+**Belangrijkste inzicht:** Hoewel rijke landen per inwoner meer uitstoten, vlakt de stijging af. Statistisch bewijs toont echter aan dat economische groei alleen onvoldoende is om emissies tijdig te laten dalen.
 """)
 
 # --- SIDEBAR BEDIENING ---
@@ -85,13 +84,13 @@ if filter_outliers_regression and len(df_year_reg) > 10:
         (df_year_reg['gdp_per_capita'] <= q3_gdp + 1.5 * iqr_gdp)
     ]
 
-# OLS Regressie berekenen via Statsmodels (Gebruikt de afgeleide kolom gdp_per_capita_sq)
+# OLS Regressie berekenen via Statsmodels (n_obs wordt exact herberekend op df_year_reg)
 model_quad = None
 model_lin = None
 r2_quad, r2_lin, p_val_sq, tipping_point, n_obs = None, None, None, None, len(df_year_reg)
+tipping_point_valid = False
 
 if n_obs > 10:
-    # Model 1: Kwadratisch (EKC) - Expliciet met gdp_per_capita_sq uit ETL!
     model_quad = smf.ols('co2_per_capita ~ gdp_per_capita + gdp_per_capita_sq', data=df_year_reg).fit()
     r2_quad = model_quad.rsquared
     p_val_sq = model_quad.pvalues.get('gdp_per_capita_sq', 1.0)
@@ -100,18 +99,22 @@ if n_obs > 10:
     b2 = model_quad.params.get('gdp_per_capita_sq', 0)
     if b2 < 0:
         tipping_point = -b1 / (2 * b2)
+        # Check of het kantelpunt binnen het daadwerkelijke BBP-bereik van de data valt
+        min_gdp = df_year_reg['gdp_per_capita'].min()
+        max_gdp = df_year_reg['gdp_per_capita'].max()
+        if min_gdp <= tipping_point <= max_gdp:
+            tipping_point_valid = True
 
-    # Model 2: Lineair (om te vergelijken wat een rechte lijn zou missen)
     model_lin = smf.ols('co2_per_capita ~ gdp_per_capita', data=df_year_reg).fit()
     r2_lin = model_lin.rsquared
 
 # Markeer landen ten opzichte van kantelpunt op de wereldkaart
-if tipping_point and tipping_point > 0:
+if tipping_point and tipping_point_valid:
     df_year_full['ekc_status'] = df_year_full['gdp_per_capita'].apply(
         lambda x: "Boven Kantelpunt" if x >= tipping_point else "Onder Kantelpunt"
     )
 else:
-    df_year_full['ekc_status'] = "Onder Kantelpunt"
+    df_year_full['ekc_status'] = "Niet van toepassing / Geen empirisch kantelpunt"
 
 # --- TABBLADEN STRUCTUUR ---
 tab1, tab2, tab3, tab4 = st.tabs([
@@ -135,9 +138,10 @@ with tab1:
     
     col_map_opt, _ = st.columns([1, 2])
     with col_map_opt:
-        map_color_mode = st.radio("Kleurkaart op basis van:", ["Absolute CO₂-uitstoot", "Positie t.o.v. EKC-Kantelpunt"], horizontal=True)
+        # Aangepast label zoals opgesomd door ChatGPT (geen 'Absolute', maar 'CO₂-uitstoot per inwoner')
+        map_color_mode = st.radio("Kleurkaart op basis van:", ["CO₂-uitstoot per inwoner", "Positie t.o.v. EKC-Kantelpunt"], horizontal=True)
 
-    if map_color_mode == "Absolute CO₂-uitstoot":
+    if map_color_mode == "CO₂-uitstoot per inwoner":
         fig_map = px.choropleth(
             df_year_full,
             locations="iso3",
@@ -154,7 +158,7 @@ with tab1:
             locations="iso3",
             color="ekc_status",
             hover_name="country",
-            color_discrete_map={"Onder Kantelpunt": PRIMARY_COLOR, "Boven Kantelpunt": ACCENT_COLOR},
+            color_discrete_map={"Onder Kantelpunt": PRIMARY_COLOR, "Boven Kantelpunt": ACCENT_COLOR, "Niet van toepassing / Geen empirisch kantelpunt": "gray"},
             template=THEME_TEMPLATE,
             title=f"Landen gekleurd naar EKC-kantelpunt status ({selected_year})"
         )
@@ -194,7 +198,6 @@ with tab2:
                 title=f"EKC Kwadratische Regressielijn vs. Lineaire Fit ({selected_year})"
             )
 
-            # Fit curves berekenen
             x_vals = np.linspace(df_year_reg['gdp_per_capita'].min(), df_year_reg['gdp_per_capita'].max(), 200)
             df_pred = pd.DataFrame({'gdp_per_capita': x_vals, 'gdp_per_capita_sq': x_vals**2})
             
@@ -208,19 +211,24 @@ with tab2:
             st.plotly_chart(fig_scatter, use_container_width=True)
 
         with col_stats:
-            st.subheader("📋 Regressieresultaten")
+            st.subheader("📋 Regressieresultaten & Evaluatie")
             conf_int = model_quad.conf_int().loc['gdp_per_capita_sq']
+            
+            tp_text = f"${tipping_point:,.0f}" if (tipping_point and tipping_point_valid) else "Buiten databereik / Extrapolatie"
             
             st.markdown(f"""
             * **Kwadratische Term ($\beta_2$):** `{model_quad.params['gdp_per_capita_sq']:.2e}`
             * **95% Betrouwbaarheidsinterval:** 
               `[{conf_int[0]:.2e}, {conf_int[1]:.2e}]`
-            * **Berekend Kantelpunt:** {f'${tipping_point:,.0f}' if tipping_point else 'Geen omgekeerde U'}
+            * **Empirisch Kantelpunt:** {tp_text}
             """)
 
             st.markdown("---")
-            st.markdown("**Wat mist een rechte lijn?**")
-            st.write(f"Een lineair model heeft een $R^2$ van **{r2_lin:.3f}**. Het kwadratische model verhoogt de verklarende kracht naar **{r2_quad:.3f}**. Een rechte lijn veronderstelt dat CO₂ oneindig blijft stijgen bij meer welvaart, wat de werkelijkheid vertekent.")
+            st.markdown("**Statistische Noot:**")
+            if tipping_point_valid:
+                st.write(f"Het berekende kantelpunt van {tp_text} valt binnen het waargenomen BBP-bereik van dit jaar, wat empirische steun biedt aan de EKC-hypothese.")
+            else:
+                st.write("Het berekende kantelpunt valt buiten het werkelijke BBP-bereik van de dataset (of er is geen sprake van een negatieve $\beta_2$). Dit betekent dat de omgekeerde U-vorm in dit jaar wiskundig wel geextrapoleerd kan worden, maar niet empirisch is waargenomen binnen de huidige economische grenzen.")
     else:
         st.warning("Onvoldoende datapunten voor betrouwbare regressie.")
 
