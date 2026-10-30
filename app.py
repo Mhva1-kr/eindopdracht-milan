@@ -11,7 +11,6 @@ st.set_page_config(
     layout="wide"
 )
 
-# Eenduidig kleurenpalet
 PRIMARY_COLOR = "#1f77b4"
 ACCENT_COLOR = "#d62728"
 THEME_TEMPLATE = "plotly_white"
@@ -26,7 +25,7 @@ except FileNotFoundError:
     st.error("Lokaal bestand 'co2_gdp_data.csv' niet gevonden! Voer eerst het script 'etl.py' uit.")
     st.stop()
 
-# --- HOOFDBOODSCHAP / HOOFDCONCLUSIE BOVENAAN ---
+# --- HOOFDBOODSCHAP BOVENAAN ---
 st.title("🌍 CO₂-Uitstoot & Economische Welvaart (EKC Analyse)")
 st.info("""
 **Hoofdboodschap:** Dit dashboard toetst of economische groei automatisch leidt tot vergroening (de Environmental Kuznets Curve). 
@@ -44,13 +43,13 @@ st.sidebar.subheader("⚙️ Regressie Opties")
 filter_outliers_regression = st.sidebar.checkbox(
     "Verwijder uitschieters (1.5 × IQR) ALLEEN voor het regressiemodel", 
     value=False,
-    help="De wereldkaart blijft de volledige dataset tonen om de data-integriteit te bewaken."
+    help="De wereldkaart en KPI's blijven de volledige dataset tonen om de data-integriteit te bewaken."
 )
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🛠️ Categorie Drempels (Instelbaar)")
-low_thresh = st.sidebar.slider("Drempel Ontwikkeling vs Opkomend ($)", 2000, 15000, 10000, 1000)
-high_thresh = st.sidebar.slider("Drempel Opkomend vs Rijk ($)", 20000, 60000, 40000, 2000)
+low_thresh = st.sidebar.slider("Drempel Ontwikkeling vs Opkomend (USD)", 2000, 15000, 10000, 1000)
+high_thresh = st.sidebar.slider("Drempel Opkomend vs Rijk (USD)", 20000, 60000, 40000, 2000)
 
 # Filter dataset op gekozen jaartal (Volledige dataset voor kaart/kpi)
 df_year_full = df[df['year'] == selected_year].dropna(subset=['gdp_per_capita', 'co2_per_capita']).copy()
@@ -58,11 +57,11 @@ df_year_full = df[df['year'] == selected_year].dropna(subset=['gdp_per_capita', 
 # Dynamische her-categorisering op basis van sidebar sliders
 def dynamic_categorize(gdp):
     if gdp > high_thresh:
-        return f"Rijk (> ${high_thresh/1000:.0f}k)"
+        return f"Rijk (> {high_thresh/1000:.0f}k USD)"
     elif gdp >= low_thresh:
-        return f"Opkomend (${low_thresh/1000:.0f}k - ${high_thresh/1000:.0f}k)"
+        return f"Opkomend ({low_thresh/1000:.0f}k - {high_thresh/1000:.0f}k USD)"
     else:
-        return f"Ontwikkeling (< ${low_thresh/1000:.0f}k)"
+        return f"Ontwikkeling (< {low_thresh/1000:.0f}k USD)"
 
 df_year_full['dynamic_income_group'] = df_year_full['gdp_per_capita'].apply(dynamic_categorize)
 
@@ -99,10 +98,9 @@ if n_obs > 10:
     b2 = model_quad.params.get('gdp_per_capita_sq', 0)
     if b2 < 0:
         tipping_point = -b1 / (2 * b2)
-        # Check of het kantelpunt binnen het daadwerkelijke BBP-bereik van de data valt
         min_gdp = df_year_reg['gdp_per_capita'].min()
         max_gdp = df_year_reg['gdp_per_capita'].max()
-        if min_gdp <= tipping_point <= max_gdp:
+        if (p_val_sq < 0.05) and (min_gdp <= tipping_point <= max_gdp):
             tipping_point_valid = True
 
     model_lin = smf.ols('co2_per_capita ~ gdp_per_capita', data=df_year_reg).fit()
@@ -114,7 +112,7 @@ if tipping_point and tipping_point_valid:
         lambda x: "Boven Kantelpunt" if x >= tipping_point else "Onder Kantelpunt"
     )
 else:
-    df_year_full['ekc_status'] = "Niet van toepassing / Geen empirisch kantelpunt"
+    df_year_full['ekc_status'] = "Geen Significant Empirisch Kantelpunt"
 
 # --- TABBLADEN STRUCTUUR ---
 tab1, tab2, tab3, tab4 = st.tabs([
@@ -130,7 +128,7 @@ with tab1:
     
     kpi1, kpi2, kpi3, kpi4 = st.columns(4)
     kpi1.metric("Aantal Landen (Volledig)", len(df_year_full))
-    kpi2.metric("Gemiddeld BBP per hoofd", f"${df_year_full['gdp_per_capita'].mean():,.0f}")
+    kpi2.metric("Gemiddeld BBP per hoofd", f"{df_year_full['gdp_per_capita'].mean():,.0f} USD")
     kpi3.metric("Gemiddelde CO₂ per hoofd", f"{df_year_full['co2_per_capita'].mean():.2f} ton")
     kpi4.metric("Mediaan CO₂ per hoofd", f"{df_year_full['co2_per_capita'].median():.2f} ton")
 
@@ -138,7 +136,6 @@ with tab1:
     
     col_map_opt, _ = st.columns([1, 2])
     with col_map_opt:
-        # Aangepast label zoals opgesomd door ChatGPT (geen 'Absolute', maar 'CO₂-uitstoot per inwoner')
         map_color_mode = st.radio("Kleurkaart op basis van:", ["CO₂-uitstoot per inwoner", "Positie t.o.v. EKC-Kantelpunt"], horizontal=True)
 
     if map_color_mode == "CO₂-uitstoot per inwoner":
@@ -158,13 +155,13 @@ with tab1:
             locations="iso3",
             color="ekc_status",
             hover_name="country",
-            color_discrete_map={"Onder Kantelpunt": PRIMARY_COLOR, "Boven Kantelpunt": ACCENT_COLOR, "Niet van toepassing / Geen empirisch kantelpunt": "gray"},
+            color_discrete_map={"Onder Kantelpunt": PRIMARY_COLOR, "Boven Kantelpunt": ACCENT_COLOR, "Geen Significant Empirisch Kantelpunt": "gray"},
             template=THEME_TEMPLATE,
             title=f"Landen gekleurd naar EKC-kantelpunt status ({selected_year})"
         )
 
     fig_map.update_layout(margin={"r":0,"t":40,"l":0,"b":0}, height=500)
-    st.plotly_chart(fig_map, use_container_width=True)
+    st.plotly_chart(fig_map, width="stretch")
 
 # --- TAB 2: STATISTISCHE HYPOTHESETOETSING ---
 with tab2:
@@ -208,16 +205,16 @@ with tab2:
             fig_scatter.add_trace(go.Scatter(x=x_vals, y=y_lin, mode='lines', name='Rechte Lijn (Lineair)', line=dict(color='gray', dash='dash')))
 
             fig_scatter.update_layout(height=480)
-            st.plotly_chart(fig_scatter, use_container_width=True)
+            st.plotly_chart(fig_scatter, width="stretch")
 
         with col_stats:
             st.subheader("📋 Regressieresultaten & Evaluatie")
             conf_int = model_quad.conf_int().loc['gdp_per_capita_sq']
             
-            tp_text = f"${tipping_point:,.0f}" if (tipping_point and tipping_point_valid) else "Buiten databereik / Extrapolatie"
+            tp_text = f"{tipping_point:,.0f} USD" if (tipping_point and tipping_point_valid) else "Buiten databereik / Geen significant kantelpunt"
             
             st.markdown(f"""
-            * **Kwadratische Term ($\beta_2$):** `{model_quad.params['gdp_per_capita_sq']:.2e}`
+            * **Kwadratische Term ($\\beta_2$):** `{model_quad.params['gdp_per_capita_sq']:.2e}`
             * **95% Betrouwbaarheidsinterval:** 
               `[{conf_int[0]:.2e}, {conf_int[1]:.2e}]`
             * **Empirisch Kantelpunt:** {tp_text}
@@ -226,9 +223,11 @@ with tab2:
             st.markdown("---")
             st.markdown("**Statistische Noot:**")
             if tipping_point_valid:
-                st.write(f"Het berekende kantelpunt van {tp_text} valt binnen het waargenomen BBP-bereik van dit jaar, wat empirische steun biedt aan de EKC-hypothese.")
+                st.success(f"Het berekende kantelpunt van {tp_text} valt binnen het waargenomen BBP-bereik en is significant ($p < 0.05$), wat empirische steun biedt aan de EKC-hypothese.")
             else:
-                st.write("Het berekende kantelpunt valt buiten het werkelijke BBP-bereik van de dataset (of er is geen sprake van een negatieve $\beta_2$). Dit betekent dat de omgekeerde U-vorm in dit jaar wiskundig wel geextrapoleerd kan worden, maar niet empirisch is waargenomen binnen de huidige economische grenzen.")
+                st.warning(r"""
+                Het berekende kantelpunt valt buiten het werkelijke BBP-bereik van de dataset, of de kwadratische term is niet significant ($p \ge 0.05$).
+                """)
     else:
         st.warning("Onvoldoende datapunten voor betrouwbare regressie.")
 
@@ -247,9 +246,9 @@ with tab3:
         labels={"dynamic_income_group": "Inkomensklasse", "co2_per_capita": "CO₂ per hoofd (ton)"}
     )
     fig_box_cat.update_layout(height=450, showlegend=False)
-    st.plotly_chart(fig_box_cat, use_container_width=True)
+    st.plotly_chart(fig_box_cat, width="stretch")
 
-# --- TAB 4: CATEGORIE ANALYSE ---
+# --- TAB 4: CATEGORIE ANALYSE (TOP 10 BAR CHART) ---
 with tab4:
     st.header("🔘 Dynamische Categorie Analyse")
     st.markdown("Analyseer de hoogste uitstoters binnen de instelbare economische drempels uit de sidebar.")
@@ -275,4 +274,4 @@ with tab4:
         )
         fig_bar.update_traces(marker_color=PRIMARY_COLOR)
         fig_bar.update_layout(height=450)
-        st.plotly_chart(fig_bar, use_container_width=True)
+        st.plotly_chart(fig_bar, width="stretch")
